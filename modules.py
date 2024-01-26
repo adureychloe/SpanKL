@@ -80,12 +80,12 @@ def transpose_for_scores(x, num_heads, head_size):
 def sequence_mask(lengths, maxlen=None, dtype=torch.bool):
     """ mask 句子非pad部分为 1"""
     if maxlen is None:
-        maxlen = lengths.max()
+        maxlen = lengths.max() # 最大句子长度
     row_vector = torch.arange(0, maxlen, 1)
     if lengths.is_cuda:
         row_vector = row_vector.cuda()
-    matrix = torch.unsqueeze(lengths, dim=-1)
-    mask = row_vector < matrix
+    matrix = torch.unsqueeze(lengths, dim=-1) # [32]->[32,1]
+    mask = row_vector < matrix # [40]<[32,1]->[32,40], 表示每个句子的长度，例如句子长5，那么前5个为1，后面为0
     mask.type(dtype)
     return mask
 
@@ -811,38 +811,40 @@ class BaselineAdd(NerModel):
 
 class SpanKL(NerModel):
     def __init__(self, args, loader):
-        super(SpanKL, self).__init__()
-        self.args = args
-        self.loader = loader
-        self.num_tasks = loader.num_tasks
-        self.num_ents_per_task = loader.num_ents_per_task
-        self.taskid2offset = loader.tid2offset  # 每个任务不同个ent
-        self.hidden_size_per_ent = 50
-        self.grad_clip = None
-        if args.corpus == 'onto':
-            self.grad_clip = 1.0
-        if args.corpus == 'fewnerd':
-            self.grad_clip = 5.0
-        self.use_schedual = True
-        self.gumbel_generator = torch.Generator(device=args.device)
-        self.gumbel_generator.manual_seed(self.args.seed)
-        # self.ent_size = self.num_ent = self.loader.ent_dim  # total ent dim across all task
-        self.ep = None
-        self.use_slr = False  # not used in the published paper
+        """
+        初始化SpanKL类。
 
-        self.use_bert = args.pretrain_mode == 'fine_tuning'
-        if self.use_bert:
-            self.dropout_layer = nn.Dropout(p=args.enc_dropout)
-            self.bert_conf = BertConfig.from_pretrained(args.bert_model_dir)
-            self.bert_layer = BertModel.from_pretrained(args.bert_model_dir)
-            encoder_dim = self.bert_conf.hidden_size
-            # self.lr = 5e-5
-            # self.lr = 1e-4
-            self.lr = self.args.bert_lr
+        Args:
+            args: 包含各种参数的对象。
+            loader: 用于加载数据的对象。
+        """
+        super(SpanKL, self).__init__()  # 调用父类的初始化方法
+        self.args = args  # 存储参数
+        self.loader = loader  # 存储数据加载器
+        self.num_tasks = loader.num_tasks  # 任务数量
+        self.num_ents_per_task = loader.num_ents_per_task  # 每个任务的实体数量
+        self.taskid2offset = loader.tid2offset  # 每个任务的实体偏移量
+        self.hidden_size_per_ent = 50  # 每个实体的隐藏层大小
+        self.grad_clip = None  # 梯度裁剪值
+        if args.corpus == 'onto':  # 如果语料库是'onto'
+            self.grad_clip = 1.0  # 设置梯度裁剪值为1.0
+        if args.corpus == 'fewnerd':  # 如果语料库是'fewnerd'
+            self.grad_clip = 5.0  # 设置梯度裁剪值为5.0
+        self.use_schedual = True  # 是否使用调度器
+        self.gumbel_generator = torch.Generator(device=args.device)  # Gumbel生成器
+        self.gumbel_generator.manual_seed(self.args.seed)  # 设置随机种子
+        self.ep = None  # 未使用的变量
+        self.use_slr = False  # 在发布的论文中未使用
 
-            # self.extra_dense = torch.nn.Linear(encoder_dim, encoder_dim)
-        else:
-            self.bilstm_layer = nn.LSTM(
+        self.use_bert = args.pretrain_mode == 'fine_tuning'  # 是否使用BERT预训练模型
+        if self.use_bert:  # 如果使用BERT
+            self.dropout_layer = nn.Dropout(p=args.enc_dropout)  # Dropout层
+            self.bert_conf = BertConfig.from_pretrained(args.bert_model_dir)  # BERT配置
+            self.bert_layer = BertModel.from_pretrained(args.bert_model_dir)  # BERT模型
+            encoder_dim = self.bert_conf.hidden_size  # 编码器维度
+            self.lr = self.args.bert_lr  # 学习率
+        else:  # 如果不使用BERT
+            self.bilstm_layer = nn.LSTM(  # BiLSTM层
                 input_size=1024,
                 hidden_size=512,
                 num_layers=1,
@@ -850,57 +852,47 @@ class SpanKL(NerModel):
                 batch_first=True,
                 dropout=0
             )
-            encoder_dim = 1024
-            self.lr = self.args.lr  # 1e-3
+            encoder_dim = 1024  # 编码器维度
+            self.lr = self.args.lr  # 学习率
 
-        if self.use_slr:
-            self.slr_layer = torch.nn.Linear(encoder_dim, 50 * 2)
+        if self.use_slr:  # 如果使用SLR
+            self.slr_layer = torch.nn.Linear(encoder_dim, 50 * 2)  # SLR层
 
         if self.args.use_task_embed:
-            # self.task_embed = torch.nn.Embedding(self.num_tasks, 1024)
-            self.task_embed = torch.nn.Parameter(torch.Tensor(self.num_tasks, encoder_dim))
-            # torch.nn.init.uniform_(self.task_embed.data, -1., 1.)
-            torch.nn.init.normal_(self.task_embed.data, mean=0., std=1.)
-            # torch.nn.init.normal_(self.task_embed.data, mean=0., std=0.25)  # 不行 会导致更少的门开
-            # torch.nn.init.constant_(self.task_embed.data, 0)
-            # self.task_embed.data = self.task_embed.data.abs()  # 门全部先开着
+            # 如果使用任务嵌入
+            self.task_embed = torch.nn.Parameter(torch.Tensor(self.num_tasks, encoder_dim))  # 创建任务嵌入参数
+            torch.nn.init.normal_(self.task_embed.data, mean=0., std=1.)  # 使用正态分布初始化任务嵌入参数
 
             self.gate_tensor_lst = [None] * self.num_tasks  # 用来存放当前前向传播时经过gumble_softmax采样得到的0-1binary vector
 
         # task dense layer
-        self.output_dim_per_task_lst = [2 * self.hidden_size_per_ent * num_ents for num_ents in self.num_ents_per_task]
-        # self.task_layers = [nn.Linear(encoder_dim, output_dim_per_task) for output_dim_per_task in self.output_dim_per_task_lst]  # one task one independent layer
-        # 这样才能cuda()生效
-        self.task_layers = nn.ModuleList([torch.nn.Linear(encoder_dim, output_dim_per_task) for output_dim_per_task in self.output_dim_per_task_lst])  # one task one independent layer
+        self.output_dim_per_task_lst = [2 * self.hidden_size_per_ent * num_ents for num_ents in self.num_ents_per_task]  # 计算每个任务的输出维度 # 论文中的2K
+        self.task_layers = nn.ModuleList([torch.nn.Linear(encoder_dim, output_dim_per_task) for output_dim_per_task in self.output_dim_per_task_lst])  # 为每个任务创建一个独立的线性层
         for layer in self.task_layers:
-            torch.nn.init.kaiming_normal_(layer.weight)
+            torch.nn.init.kaiming_normal_(layer.weight)  # 使用kaiming正态分布初始化权重
             if layer.bias is not None:
-                torch.nn.init.zeros_(layer.bias)
+                torch.nn.init.zeros_(layer.bias)  # 初始化偏置为0
 
-        self.bce_loss_layer = torch.nn.BCEWithLogitsLoss(reduction='none')
-        self.mse_loss_layer = torch.nn.MSELoss(reduction='none')
-        count_params(self)
-
-        # print(*[n for n, p in self.named_parameters()], sep='\n')
-        # ipdb.set_trace()
+        self.bce_loss_layer = torch.nn.BCEWithLogitsLoss(reduction='none')  # 创建二元交叉熵损失层
+        self.mse_loss_layer = torch.nn.MSELoss(reduction='none')  # 创建均方误差损失层
+        count_params(self)  # 计算模型的参数数量
 
         if self.use_bert:
-            """1"""
-            no_decay = ['bias', 'LayerNorm.weight']
-            p1 = [p for n, p in self.named_parameters() if n == 'task_embed']
-            spanlayer_p_weight = [p for n, p in self.named_parameters() if 'task_layers' in n and 'weight' in n]
-            spanlayer_p_bias = [p for n, p in self.named_parameters() if 'task_layers' in n and 'bias' in n]
-            p2 = [p for n, p in self.named_parameters() if n != 'task_embed' and 'task_layers' not in n and any(nd in n for nd in no_decay)]
-            p3 = [p for n, p in self.named_parameters() if n != 'task_embed' and 'task_layers' not in n and not any(nd in n for nd in no_decay)]
-            self.grouped_params = [
+            # 如果使用BERT
+            no_decay = ['bias', 'LayerNorm.weight']  # 不需要衰减的参数
+            p1 = [p for n, p in self.named_parameters() if n == 'task_embed']  # 任务嵌入的参数
+            spanlayer_p_weight = [p for n, p in self.named_parameters() if 'task_layers' in n and 'weight' in n]  # 任务层的权重参数
+            spanlayer_p_bias = [p for n, p in self.named_parameters() if 'task_layers' in n and 'bias' in n]  # 任务层的偏置参数
+            p2 = [p for n, p in self.named_parameters() if n != 'task_embed' and 'task_layers' not in n and any(nd in n for nd in no_decay)]  # 不需要衰减的其他参数
+            p3 = [p for n, p in self.named_parameters() if n != 'task_embed' and 'task_layers' not in n and not any(nd in n for nd in no_decay)]  # 需要衰减的其他参数
+            self.grouped_params = [  # 分组参数，用于优化器
                 {'params': spanlayer_p_weight, 'lr': 1e-3},
                 {'params': spanlayer_p_bias, 'weight_decay': 0.0, 'lr': 1e-3},
                 {'params': p2, 'weight_decay': 0.0},
                 {'params': p3},
             ]
-            if p1:  # using task emb
-                self.grouped_params = [{'params': p1, 'weight_decay': 0.0, 'lr': 1e-3}] + self.grouped_params
-            """2"""
+            if p1:  # 如果使用任务嵌入
+                self.grouped_params = [{'params': p1, 'weight_decay': 0.0, 'lr': 1e-3}] + self.grouped_params  # 将任务嵌入的参数添加到分组参数中            """2"""
             # no_decay = ['bias', 'LayerNorm.weight']
             # p1 = [p for n, p in self.named_parameters() if n == 'task_embed']
             # spanlayer_p_weight = [p for n, p in self.named_parameters() if 'task_layers' in n and 'weight' in n]
@@ -937,21 +929,21 @@ class SpanKL(NerModel):
                                            output_hidden_states=True,
                                            )
             seq_len_lst = seq_len.tolist()
-            bert_out = bert_outputs.last_hidden_state
+            bert_out = bert_outputs.last_hidden_state # shape: [b,l,hid]([32,49,768])
             # 去除bert_output[CLS]和[SEP]
             bert_out_lst = [t for t in bert_out]  # split along batch
             for i, t in enumerate(bert_out_lst):  # iter along batch
                 # tensor [len, hid]
-                bert_out_lst[i] = torch.cat([t[1: 1 + seq_len_lst[i]], t[2 + seq_len_lst[i]:]], 0)
+                bert_out_lst[i] = torch.cat([t[1: 1 + seq_len_lst[i]], t[2 + seq_len_lst[i]:]], 0) # remove [CLS] and [SEP]
             bert_out = torch.stack(bert_out_lst, 0)  # stack along batch
 
             batch_ori_2_tok = inputs_dct['batch_ori_2_tok']
-            if batch_ori_2_tok.shape[0]:  # 只取子词的第一个字  ENG
-                bert_out_lst = [t for t in bert_out]
-                for bdx, t in enumerate(bert_out_lst):
-                    ori_2_tok = batch_ori_2_tok[bdx]
-                    bert_out_lst[bdx] = bert_out_lst[bdx][ori_2_tok]
-                bert_out = torch.stack(bert_out_lst, 0)
+            if batch_ori_2_tok.shape[0]:  # 如果batch_ori_2_tok的第一维（即批次大小）大于0
+                bert_out_lst = [t for t in bert_out]  # 将bert_out转换为列表
+                for bdx, t in enumerate(bert_out_lst):  # 遍历bert_out_lst中的每个元素
+                    ori_2_tok = batch_ori_2_tok[bdx]  # 获取当前批次的原始到标记映射(不包含#开头的符号)
+                    bert_out_lst[bdx] = bert_out_lst[bdx][ori_2_tok]  # 使用映射更新bert_out_lst中的对应元素
+                bert_out = torch.stack(bert_out_lst, 0)  # 将更新后的bert_out_lst堆叠回一个张量
 
             bert_out = self.dropout_layer(bert_out)  # don't forget
 
@@ -1020,45 +1012,36 @@ class SpanKL(NerModel):
         return output_per_task_lst
 
     def task_layer_forward2(self, encoder_output, use_task_embed=True, use_gumbel_softmax=True, gumbel_tasks=None):
-        output_per_task_lst = []  # list of [b,l,h~]
-        for task_id in range(self.num_tasks):
-            if use_task_embed:
-                gate_logit = self.task_embed[task_id]  # [1024]
-                # calc gate [emb_size]
-                if use_gumbel_softmax:  # gate binary vector {0,1} with random sample. logits is distribution
-                    if task_id in gumbel_tasks:  # when train specific task, which enable grad back propagation
-                        gate = gumbel_sigmoid(gate_logit, hard=True, generator=self.gumbel_generator)  # random output
-                        self.gate_tensor_lst[task_id] = gate
-                        # gate = torch.ones_like(gate_logit)
-                        # self.gate_tensor_lst[task_id] = gate_logit
-                    else:
-                        # 这种方式不会传梯度到gate_logit也就是task_embed去。
-                        gate = (gate_logit >= 0.).float()  # deterministic output. when is not training, which unable grad back propagation
-                        # if task_id == 0:
-                        #     gate = (gate_logit > 0.).float()
-                        # else:
-                        #     gate = torch.ones_like(gate_logit)
-                    # ipdb.set_trace()
-                else:
-                    gate = torch.sigmoid(gate_logit)  # [0~1] prob
+            output_per_task_lst = []  # 初始化一个空列表，用于存储每个任务的输出
+            for task_id in range(self.num_tasks):  # 遍历每个任务
+                if use_task_embed:  # 如果使用任务嵌入
+                    gate_logit = self.task_embed[task_id]  # 获取当前任务的嵌入
+                    if use_gumbel_softmax:  # 如果使用Gumbel Softmax
+                        if task_id in gumbel_tasks:  # 如果当前任务在gumbel_tasks中
+                            gate = gumbel_sigmoid(gate_logit, hard=True, generator=self.gumbel_generator)  # 使用Gumbel Sigmoid生成门控信号
+                            self.gate_tensor_lst[task_id] = gate  # 将门控信号存储在列表中
+                        else:  # 如果当前任务不在gumbel_tasks中
+                            gate = (gate_logit >= 0.).float()  # 生成确定性的门控信号，不进行梯度反向传播
+                    else:  # 如果不使用Gumbel Softmax
+                        gate = torch.sigmoid(gate_logit)  # 使用Sigmoid函数生成门控信号
 
-                input_per_task = encoder_output * gate[None, None, :]
-            else:
-                input_per_task = encoder_output
+                    input_per_task = encoder_output * gate[None, None, :]  # 使用门控信号调整编码器的输出，得到每个任务的输入
+                else:  # 如果不使用任务嵌入
+                    input_per_task = encoder_output  # 直接使用编码器的输出作为每个任务的输入
 
-            output_per_task = self.task_layers[task_id](input_per_task)
-            output_per_task_lst.append(output_per_task)
-        output_per_task_lst = torch.cat(output_per_task_lst, dim=-1)  # [b,l,h+]
+                output_per_task = self.task_layers[task_id](input_per_task)  # 通过任务linear层得到每个任务的输出 shape:[32,40,100]
+                output_per_task_lst.append(output_per_task)  # 将每个任务的输出添加到列表中
+            output_per_task_lst = torch.cat(output_per_task_lst, dim=-1)  # 将所有任务的输出沿最后一个维度拼接起来
 
-        if self.use_slr:
-            slr_output = self.slr_layer(encoder_output)  # [b,l,2h]
-            link_start_hidden, link_end_hidden = torch.chunk(slr_output, 2, dim=-1)
-            link_scores = calc_link_score(link_start_hidden, link_end_hidden)  # b,l-1
-            pooling_type = 'softmin'
-            logsumexp_temp = 0.3
-            self.refined_scores = calc_refined_mat_tensor(link_scores, pooling_type=pooling_type, temp=logsumexp_temp)  # b,l,l,1
+            if self.use_slr:  # 如果使用SLR
+                slr_output = self.slr_layer(encoder_output)  # 通过SLR层得到输出
+                link_start_hidden, link_end_hidden = torch.chunk(slr_output, 2, dim=-1)  # 将SLR层的输出分割为开始和结束隐藏状态
+                link_scores = calc_link_score(link_start_hidden, link_end_hidden)  # 计算链接得分
+                pooling_type = 'softmin'  # 设置池化类型为softmin
+                logsumexp_temp = 0.3  # 设置logsumexp的温度为0.3
+                self.refined_scores = calc_refined_mat_tensor(link_scores, pooling_type=pooling_type, temp=logsumexp_temp)  # 计算细化的得分矩阵
 
-        return output_per_task_lst
+            return output_per_task_lst  # 返回每个任务的输出
 
     def task_layer_forward3(self, encoder_output, use_task_embed=True, use_gumbel_softmax=True, gumbel_tasks=None, ep=None):
         output_per_task_lst = []  # list of [b,l,h~]
@@ -1117,16 +1100,16 @@ class SpanKL(NerModel):
         total_ent_size = start_hidden.shape[1]
 
         attention_scores = torch.matmul(start_hidden, end_hidden.transpose(-1, -2))  # [bat,num_ent,len,hid] * [bat,num_ent,hid,len] = [bat,num_ent,len,len]
-        attention_scores = attention_scores / math.sqrt(self.hidden_size_per_ent)
+        attention_scores = attention_scores / math.sqrt(self.hidden_size_per_ent) # 论文公式（3）
         span_ner_mat_tensor = attention_scores.permute(0, 2, 3, 1)  # b,l,l,e
         if self.use_slr:
             span_ner_mat_tensor = span_ner_mat_tensor + self.refined_scores
 
         self.batch_span_tensor = span_ner_mat_tensor
         # 构造下三角mask 去除了pad和下三角区域
-        len_mask = sequence_mask(seq_len)  # b,l
-        matrix_mask = torch.logical_and(torch.unsqueeze(len_mask, 1), torch.unsqueeze(len_mask, 2))  # b,l,l  # 小正方形mask pad为0
-        score_mat_mask = torch.triu(matrix_mask, diagonal=0)  # b,l,l  # 下三角0 上三角和对角线1
+        len_mask = sequence_mask(seq_len)  # b,l [32,40]
+        matrix_mask = torch.logical_and(torch.unsqueeze(len_mask, 1), torch.unsqueeze(len_mask, 2))  # [b,1,l],[b,l,1]->[b,l,l] # 矩阵表示句子有效位置  # 小正方形mask pad为0 # 例如句子长度为5，有效部分为[5,5]
+        score_mat_mask = torch.triu(matrix_mask, diagonal=0)  # b,l,l # 返回上三角部分，包括主对角线 # 下三角0 上三角和对角线1
         span_ner_pred_lst = torch.masked_select(span_ner_mat_tensor, score_mat_mask[..., None])  # 只取True或1组成列表
         span_ner_pred_lst = span_ner_pred_lst.view(-1, total_ent_size)  # [*,ent]
         return span_ner_pred_lst
@@ -1167,6 +1150,37 @@ class SpanKL(NerModel):
         # kl_losses = []
         batch_kl_loss = 0.
         for bdx in range(bsz):  # 只蒸馏当前的样本 忽略记忆库的
+        # 这段代码计算了两个分布之间的 Kullback-Leibler (KL) 散度，这是一种衡量两个概率分布差异的方法。在这个例子中，这两个分布是 `pred_need_distill`（需要蒸馏的预测）和 `kl_tgt`（目标分布）。
+
+        # 以下是详细的步骤：
+
+        # 1. `pred_need_distill` 和 `-pred_need_distill` 被堆叠起来形成 `kl_pred`，形状为 `[num_spans, ent, 2]`。这是因为 KL 散度需要比较两个分布，所以我们创建了一个新的维度来表示这两个分布。
+
+        # 2. 对 `kl_pred` 使用 `logsigmoid` 函数，得到 `log_kl_pred`。`logsigmoid` 是 sigmoid 函数的对数形式，可以将输入映射到 `(0, 1)` 区间。
+
+        # 3. `kl_tgt` 是目标分布，它被除以 1（这实际上没有改变它的值），然后和 `-kl_tgt` 一起被堆叠起来形成 `kl_tgt_logit`，形状也是 `[num_spans, ent, 2]`。
+
+        # 4. 对 `kl_tgt_logit` 使用 `logsigmoid` 函数，得到 `log_kl_tgt`。
+
+        # 5. 使用 `torch.nn.functional.kl_div` 函数计算 `log_kl_pred` 和 `log_kl_tgt` 之间的 KL 散度，得到 `kl_loss`。`reduction='none'` 参数表示对每一个点计算，`log_target=True` 参数表示目标分布已经取了对数。`torch.nn.functional.kl_div` 函数计算的是两个概率分布之间的 Kullback-Leibler (KL) 散度。这个函数通常接受的是两个概率分布，这意味着输入通常应该是经过 softmax 或者 sigmoid 函数处理过的，以确保它们的值在 0 和 1 之间，并且所有的值的和为 1。`torch.nn.functional.kl_div` 函数计算的是两个概率分布之间的 Kullback-Leibler (KL) 散度。这个函数通常接受的是两个概率分布，这意味着输入通常应该是经过 softmax 或者 sigmoid 函数处理过的，以确保它们的值在 0 和 1 之间，并且所有的值的和为 1。
+
+        # 然而，在这段代码中，`kl_div` 函数的输入是 `log_kl_pred` 和 `log_kl_tgt`，这两个变量都是经过 `logsigmoid` 函数处理过的。`logsigmoid` 函数会将输入映射到 `(0, 1)` 区间，但是它不保证所有的值的和为 1。
+
+        # 这可能是因为这段代码实际上计算的是每个元素的 KL 散度，而不是整个分布的 KL 散度。在这种情况下，每个元素可以被视为一个独立的二元分布，所以不需要保证所有的值的和为 1。
+
+        # 另外，`kl_div` 函数的 `log_target=True` 参数表示目标分布已经取了对数。这意味着 `log_kl_tgt` 实际上表示的是目标分布的对数，而不是目标分布本身。
+
+        # 总的来说，虽然 `kl_div` 函数通常接受的是经过 softmax 或者 sigmoid 函数处理过的概率分布，但是在这段代码中，它接受的是经过 `logsigmoid` 函数处理过的对数分布。这是因为这段代码计算的是每个元素的 KL 散度，而不是整个分布的 KL 散度。
+
+
+
+        # 6. 使用 `torch.sum` 函数对 `kl_loss` 的最后一个维度进行求和，然后使用 `torch.mean` 函数对结果进行平均，得到每个 span 的 KL 损失。
+
+        # 7. 使用 `torch.sum` 函数对结果进行求和，得到所有 span 的总 KL 损失。
+
+        # 8. 最后，将这个 batch 的 KL 损失加到 `batch_kl_loss` 上。
+
+        # 这个过程计算了预测分布和目标分布之间的 KL 散度，这是一种常见的损失函数，用于训练概率模型。
             pred_need_distill = batch_predict_lst_need_distill[bdx][:, :ofs_s]
             kl_pred = torch.stack([pred_need_distill, -pred_need_distill], dim=-1)  # [num_spans, ent, 2]
             log_kl_pred = torch.nn.functional.logsigmoid(kl_pred)
@@ -1282,7 +1296,7 @@ class SpanKL(NerModel):
         self.kl_loss = 0.
         self.entropy_loss = 0.
 
-        encoder_output = self.encoder_forward(inputs_dct)
+        encoder_output = self.encoder_forward(inputs_dct) #shape: [b,l,hid](32,40,768)
 
         if ep is not None:
             task_layer_output = self.task_layer_forward3(encoder_output,
@@ -1293,7 +1307,7 @@ class SpanKL(NerModel):
             task_layer_output = self.task_layer_forward2(encoder_output,
                                                          use_task_embed=self.args.use_task_embed, use_gumbel_softmax=self.args.use_gumbel_softmax,
                                                          gumbel_tasks=[task_id],
-                                                         )
+                                                         ) # shape:[32,40,600]
 
         batch_predict = self.span_matrix_forward(task_layer_output, batch_length)  # [bsz*num_spans, ent]
 

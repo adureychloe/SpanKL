@@ -1874,64 +1874,80 @@ class NerExample:
 
     @staticmethod
     def load_from_jsonl(jsonl_file, token_deli='', external_attrs=None, dedup=True, eid=True):
-        """ dedup: deduplication ents"""
-        with open(jsonl_file, 'r', encoding='U8') as f:
-            obj_lst = [json.loads(line.strip()) for line in f]
-        exm_lst = []
-        for obj in obj_lst:
-            if 'char_lst' in obj:
-                char_lst = obj['char_lst']
-            else:
-                if 'text' in obj:  # 只有text
-                    if token_deli == '':
-                        char_lst = list(obj['text'])
-                    else:
-                        char_lst = obj['text'].split(token_deli)
+            """ 
+            Load data from a JSONL file and convert it into a list of NerExample objects.
+
+            Parameters:
+            - jsonl_file (str): The path to the JSONL file.
+            - token_deli (str): The delimiter used to split the text into tokens. Default is an empty string.
+            - external_attrs (list): A list of external attributes to be added to each NerExample object. Default is None.
+            - dedup (bool): Whether to deduplicate entities. Default is True.
+            - eid (bool): Whether to assign an entity ID to each NerExample object. Default is True.
+
+            Returns:
+            - exm_lst (list): A list of NerExample objects.
+
+            Raises:
+            - Exception: If the JSONL file does not contain either 'char_lst' or 'text' field.
+
+            """
+            with open(jsonl_file, 'r', encoding='U8') as f:
+                obj_lst = [json.loads(line.strip()) for line in f]
+            exm_lst = []
+            for obj in obj_lst:
+                if 'char_lst' in obj:
+                    char_lst = obj['char_lst']
                 else:
-                    raise Exception('there should exist either of char_lst or text field')
+                    if 'text' in obj:  # 只有text
+                        if token_deli == '':
+                            char_lst = list(obj['text'])
+                        else:
+                            char_lst = obj['text'].split(token_deli)
+                    else:
+                        raise Exception('there should exist either of char_lst or text field')
 
-            ent_dct = obj['ent_dct']
-            for k, pos_lst in ent_dct.items():
-                for pos in pos_lst:
-                    start = pos[0]
-                    if isinstance(pos[1], str):  # 精简模式 start, mention
-                        mention = pos[1]
-                        end = start
-                        while len(token_deli.join(char_lst[start: end])) < len(mention):
-                            # while token_deli.join(char_lst[start: end]) != mention:  # 当mention有误时会死循环
-                            end += 1
-                        # end = start + len(mention)  # 仅对于字符级样本有用
-                        pos[1] = end
-                    if isinstance(pos[-1], str) and pos[-1] == token_deli.join(char_lst[pos[0]:pos[1]]):  # 如果最后是4h的text 则去掉
-                        pos.pop(-1)
-
-            exm = NerExample(char_lst=char_lst, ent_dct=ent_dct, token_deli=token_deli, dedup=dedup)
-            exm.remove_invalid_ent_dct()
-            exm.update(anchor='ent_dct', dedup=dedup)
-
-            if 'pred_ent_dct' in obj:
-                pred_ent_dct = obj['pred_ent_dct']
-                for k, pos_lst in pred_ent_dct.items():
+                ent_dct = obj['ent_dct']
+                for k, pos_lst in ent_dct.items():
                     for pos in pos_lst:
                         start = pos[0]
                         if isinstance(pos[1], str):  # 精简模式 start, mention
                             mention = pos[1]
                             end = start
                             while len(token_deli.join(char_lst[start: end])) < len(mention):
+                                # while token_deli.join(char_lst[start: end]) != mention:  # 当mention有误时会死循环
                                 end += 1
                             # end = start + len(mention)  # 仅对于字符级样本有用
                             pos[1] = end
                         if isinstance(pos[-1], str) and pos[-1] == token_deli.join(char_lst[pos[0]:pos[1]]):  # 如果最后是4h的text 则去掉
                             pos.pop(-1)
-                exm.pred_ent_dct = pred_ent_dct
 
-            if external_attrs is not None:
-                [exm.__setattr__(attr, obj[attr]) for attr in external_attrs if attr in obj]
-            if eid:
-                exm.eid = len(exm_lst)
-            exm_lst.append(exm)
+                exm = NerExample(char_lst=char_lst, ent_dct=ent_dct, token_deli=token_deli, dedup=dedup)
+                exm.remove_invalid_ent_dct()
+                exm.update(anchor='ent_dct', dedup=dedup)
 
-        return exm_lst
+                if 'pred_ent_dct' in obj:
+                    pred_ent_dct = obj['pred_ent_dct']
+                    for k, pos_lst in pred_ent_dct.items():
+                        for pos in pos_lst:
+                            start = pos[0]
+                            if isinstance(pos[1], str):  # 精简模式 start, mention
+                                mention = pos[1]
+                                end = start
+                                while len(token_deli.join(char_lst[start: end])) < len(mention):
+                                    end += 1
+                                # end = start + len(mention)  # 仅对于字符级样本有用
+                                pos[1] = end
+                            if isinstance(pos[-1], str) and pos[-1] == token_deli.join(char_lst[pos[0]:pos[1]]):  # 如果最后是4h的text 则去掉
+                                pos.pop(-1)
+                    exm.pred_ent_dct = pred_ent_dct
+
+                if external_attrs is not None:
+                    [exm.__setattr__(attr, obj[attr]) for attr in external_attrs if attr in obj]
+                if eid:
+                    exm.eid = len(exm_lst)
+                exm_lst.append(exm)
+
+            return exm_lst
 
     @staticmethod
     def load_from_jsonl_4h(jsonl_file):

@@ -119,36 +119,67 @@ class NerDataReader:
         self.args.use_refine_mask = False
 
     def post_process(self, exm: NerExample, lang='ENG', train=True, arch='seq', loss_type='sigmoid'):
+        """
+        对NerExample对象进行后处理。
+
+        Args:
+            exm (NerExample): 需要处理的NerExample对象。
+            lang (str, optional): 示例的语言，默认为'ENG'。
+            train (bool, optional): 是否用于训练，默认为True。
+            arch (str, optional): 架构类型，默认为'seq'。
+            loss_type (str, optional): 损失类型，默认为'sigmoid'。
+
+        Returns:
+            dict: 包含处理后的NerExample对象和其他信息的字典。
+        """
+        # 检查exm是否有train_cache属性
         if not hasattr(exm, 'train_cache'):
-            if lang == 'ENG':  # ENG means having sub_tokens
+            # 如果语言是英文，使用BERT分词器对字符列表进行编码
+            if lang == 'ENG':
                 input_ids = self.tokenizer.convert_tokens_to_ids(exm.bert_tok_char_lst)
-            elif lang == 'ZH':  # split by each char
+            # 如果语言是中文，对每个字符进行分词
+            elif lang == 'ZH':
                 input_ids = self.tokenizer.convert_tokens_to_ids(self.char_tokenize_fn(exm.char_lst))
 
+            # 在输入ID列表的前后添加CLS和SEP标记
             input_ids = [self.cls_id] + input_ids + [self.sep_id]
+            # 更新exm的train_cache属性
             exm.train_cache = dict(input_ids=input_ids, len=len(input_ids))
+            # 如果语言是英文，更新原始长度和原始到分词的映射
             if lang == 'ENG':
                 exm.train_cache.update(ori_len=len(exm.char_lst), ori_2_tok=exm.ori_2_tok)
+            # 如果是训练数据
             if train:
+                # 如果架构类型是'seq'
                 if arch == 'seq':
+                    # 将字符列表和实体字典转换为标签列表
                     tag_lst = NerExample.to_tag_lst(exm.char_lst, exm.ent_dct)
+                    # 将标签列表转换为标签ID列表
                     tag_ids = [self.tag2id[tag] for tag in tag_lst]
+                    # 更新标签ID列表
                     exm.train_cache.update(tag_ids=tag_ids)
-
+                # 如果架构类型是'span'
                 elif arch == 'span':
+                    # 检查损失类型是否为'sigmoid'或'softmax'
                     assert loss_type in ['sigmoid', 'softmax']
+                    # 获取实体的数量
                     ent_size = len(self.ent2id)
+                    # 获取跨度级别的NER目标列表
                     span_ner_tgt_lst = exm.get_span_level_ner_tgt_lst(neg_symbol='O')
+                    # 如果损失类型是'sigmoid'
                     if loss_type == 'sigmoid':
-                        # use one-hot
-                        # 一般torch的向量都是float()而默认的numpy则是doble(float64)
+                        # 使用one-hot编码
                         span_tgt_onehot = np.zeros([len(span_ner_tgt_lst), ent_size], dtype='float32')  # [num_spans, ent]
                         for i, tag in enumerate(span_ner_tgt_lst):
                             if tag != 'O' and tag in self.ent2id:
                                 span_tgt_onehot[i][self.ent2id[tag]] = 1.
+                        # 更新跨度目标
                         exm.train_cache.update(span_tgt=span_tgt_onehot)
+                    # 如果损失类型是'softmax'
                     elif loss_type == 'softmax':
+                        # 将跨度级别的NER目标列表转换为实体ID列表
                         span_tgt = [self.ent2id[e] for e in span_ner_tgt_lst]
+                        # 更新跨度目标
                         exm.train_cache.update(span_tgt=span_tgt)
                 else:
                     raise NotImplementedError
@@ -172,6 +203,19 @@ class NerDataReader:
     def get_batcher_fn(self, gpu=False, device=None, arch='span'):
 
         def tensorize(array, dtype='int'):
+            """
+            Convert the input array to a PyTorch tensor.
+
+            Args:
+                array (numpy.ndarray or torch.Tensor or list): The input array to be converted.
+                dtype (str, optional): The data type of the tensor. Defaults to 'int'.
+
+            Returns:
+                torch.Tensor: The converted PyTorch tensor.
+
+            Raises:
+                NotImplementedError: If the specified dtype is not supported.
+            """
             if isinstance(array, np.ndarray):
                 ret = torch.from_numpy(array)
             elif isinstance(array, torch.Tensor):
@@ -195,58 +239,76 @@ class NerDataReader:
             return ret
 
         def span_batcher(batch_e):
-            max_len = max(e['len'] for e in batch_e)  # length after bert tokenized, i.e. the longer sub-word
+            """
+            对批量的数据进行处理，生成模型需要的输入。
+
+            Args:
+                batch_e (list): 包含多个字典的列表，每个字典对应一个样本的信息。
+
+            Returns:
+                dict: 包含处理后的批量数据的字典。
+            """
+            # 获取批量数据中最长的序列长度
+            max_len = max(e['len'] for e in batch_e)
+
+            # 初始化各种需要的列表
             batch_input_ids = []
             batch_bert_token_type_ids = []
             batch_bert_attention_mask = []
             batch_seq_len = []
-            batch_span_tgt_lst = []  # list of [num_spans, ent]
+            batch_span_tgt_lst = []
             batch_ner_exm = []
 
             batch_ori_seq_len = []
             batch_ori_2_tok = []
-            if 'ori_len' in batch_e[0]:  # ori_len is the raw len, especially in ENG using tokenizer to split into longer subtokens
-                ori_max_len = max(e['ori_len'] for e in batch_e)  # length before bert tokenized: shorter list
 
+            # 如果样本中包含原始长度信息
+            if 'ori_len' in batch_e[0]:
+                ori_max_len = max(e['ori_len'] for e in batch_e)
+
+            # 如果使用refine_mask
             if self.args.use_refine_mask:
-                batch_refine_mask = np.zeros([len(batch_e), ori_max_len, ori_max_len])  # 0113
+                batch_refine_mask = np.zeros([len(batch_e), ori_max_len, ori_max_len])
+
+            # 如果是基于特征的预训练模式
             if self.args.pretrain_mode == 'feature_based':
-                batch_input_pts = []  # container for feature-based pt
+                batch_input_pts = []
 
-            batch_span_tgt_lst_distilled = []  # list of [num_spans, ent]
+            batch_span_tgt_lst_distilled = []
 
+            # 对批量数据中的每个样本进行处理
             for bdx, e in enumerate(batch_e):
-                batch_seq_len.append(e['len'] - 2)  # 去除cls和sep后的长度
-                batch_input_ids.append(e['input_ids'] + [self.pad_id] * (max_len - e['len']))
-                batch_bert_token_type_ids.append([0] * max_len)  # seg0
+                batch_seq_len.append(e['len'] - 2)  # -2 for [CLS] and [SEP]
+                batch_input_ids.append(e['input_ids'] + [self.pad_id] * (max_len - e['len'])) # pad
+                batch_bert_token_type_ids.append([0] * max_len)
                 batch_bert_attention_mask.append([1] * e['len'] + [0] * (max_len - e['len']))
                 batch_ner_exm.append(e['ner_exm'])
 
-                if 'ori_len' in batch_e[0]:  # ENG
+                if 'ori_len' in batch_e[0]:
                     batch_ori_seq_len.append(e['ori_len'])
-                    batch_ori_2_tok.append(e['ori_2_tok'] + [0] * (ori_max_len - e['ori_len']))
+                    batch_ori_2_tok.append(e['ori_2_tok'] + [0] * (ori_max_len - e['ori_len'])) # pad
 
-                if self.args.pretrain_mode == 'feature_based':  # feature-based pt
+                if self.args.pretrain_mode == 'feature_based': # feature-based pt
                     if hasattr(e['ner_exm'], 'pt'):
                         assert e['ner_exm'].pt.shape[0] == e['ori_len']
                         batch_input_pts.append(e['ner_exm'].pt)
 
-                if 'span_tgt' in e:
-                    batch_span_tgt_lst.append(tensorize(e['span_tgt']))  # list of [num_spans, ent]
+                if 'span_tgt' in e: 
+                    batch_span_tgt_lst.append(tensorize(e['span_tgt']))  
                     if self.args.use_refine_mask:
-                        batch_refine_mask[bdx, :e['ori_len'], :e['ori_len']] = e['ner_exm'].refine_mask  # 0113
+                        batch_refine_mask[bdx, :e['ori_len'], :e['ori_len']] = e['ner_exm'].refine_mask  
 
                 if 'distilled_span_tgt' in e:
-                    batch_span_tgt_lst_distilled.append(tensorize(e['distilled_span_tgt']))  # list of [num_spans, ent]
+                    batch_span_tgt_lst_distilled.append(tensorize(e['distilled_span_tgt']))  
 
-            if 'ori_len' not in batch_e[0]:  # ZH
+            if 'ori_len' not in batch_e[0]:
                 batch_ori_seq_len = batch_seq_len  # 方便兼容ZH时也能使用ori_seq_len
 
             if self.args.pretrain_mode == 'feature_based':
-                batch_input_pts = torch.nn.utils.rnn.pad_sequence(batch_input_pts, batch_first=True, padding_value=0.)  # [b,len,1024]
+                batch_input_pts = torch.nn.utils.rnn.pad_sequence(batch_input_pts, batch_first=True, padding_value=0.)  
 
             if batch_span_tgt_lst:
-                batch_span_tgt = torch.cat(batch_span_tgt_lst, dim=0)  # [bsz*num_spans, ent]
+                batch_span_tgt = torch.cat(batch_span_tgt_lst, dim=0) 
             else:
                 batch_span_tgt = None
 
@@ -275,7 +337,6 @@ class NerDataReader:
                 'batch_span_tgt_distilled': batch_span_tgt_distilled,
                 'batch_span_tgt_lst_distilled': batch_span_tgt_lst_distilled
             }
-
         def seq_batcher(batch_e):
             max_len = max(e['len'] for e in batch_e)
             batch_input_ids = []

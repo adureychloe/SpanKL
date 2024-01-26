@@ -53,14 +53,14 @@ python train_clner.py \
       --corpus onto \
       --setup split \
       --perm perm0
-      
+
 # gpu: which gpu to use. (-2: auto allocate gpu -1: use cpu)
 # m: types of model (spankl|add|ext)
 # corpus: (onto|fewnerd)
 # setup: (split|filter)
 # perm: task learning order, default perm0 (perm0|perm1|...)
 ```
-**Note** that this yields results regarding **one of** the Task Permutation (e.g., --perm0), while Tab.1 and Tab.2 in the paper are the results averaged over all the Task Permutations.  
+**Note** that this yields results regarding **one of** the Task Permutation (e.g., --perm0), while Tab.1 and Tab.2 in the paper are the results averaged over all the Task Permutations.
 
 **Update 0305! #1** For convenience, we log the final metric used in the paper at each incremental step (Task) during training, as belows:
 ```angular2html
@@ -101,7 +101,7 @@ After and during training, an `overview_metric.json` file will be generated in `
 - refer to `__main__` in `print_cl_metric.py` to use `print_cl_metric()` func to **remotely** print results.
 - or refer to the end of `train_clner.py` to use a wrapped `simply_print_cl_metric()` func to **locally** print results.
 
-For any questions please notice the comments in the code or contact me.  
+For any questions please notice the comments in the code or contact me.
 Welcome to star or raise issues and PR! :)
 ## 4. License
 

@@ -34,16 +34,48 @@ class SubsetSequentialSampler(Sampler[int]):
 data_dir = 'data/'
 
 
+# def analyse_task_ent_dist():
+#     exm_file = data_dir + 'onto/train_task.jsonl'
+#     exm_lst = NerExample.load_from_jsonl(exm_file, token_deli=' ',
+#                                          external_attrs=['task_id', 'bert_tok_char_lst', 'ori_2_tok'])
+#     task_exms_dct = {}
+#     for exm in exm_lst:
+#         task_id = str(exm.task_id)
+#         task_exms_dct.setdefault(task_id, []).append(exm)
+#     for task_id in sorted(task_exms_dct):
+#         print(f'===task: {task_id}===')
+#         NerExample.stats(task_exms_dct[task_id])
 def analyse_task_ent_dist():
+    """
+    分析任务的实体分布情况。
+
+    从指定的jsonl文件中加载NER示例，并根据任务ID将示例分组。
+    统计并打印每个任务ID下的NER示例信息。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    # 定义训练任务文件路径
     exm_file = data_dir + 'onto/train_task.jsonl'
+    # 从jsonl文件中加载NER（命名实体识别）示例，同时加载外部属性
     exm_lst = NerExample.load_from_jsonl(exm_file, token_deli=' ',
                                          external_attrs=['task_id', 'bert_tok_char_lst', 'ori_2_tok'])
+    # 初始化任务示例字典
     task_exms_dct = {}
+    # 遍历每个NER示例
     for exm in exm_lst:
+        # 获取任务ID
         task_id = str(exm.task_id)
+        # 将NER示例添加到对应的任务ID下
         task_exms_dct.setdefault(task_id, []).append(exm)
+    # 遍历每个任务ID
     for task_id in sorted(task_exms_dct):
+        # 打印任务ID
         print(f'===task: {task_id}===')
+        # 统计并打印每个任务ID下的NER示例信息
         NerExample.stats(task_exms_dct[task_id])
 
 
@@ -58,30 +90,44 @@ def sort_by_idx(lst, ids=None):
 
 class CL_Loader:
     def __init__(self, entity_task_lst,
-                 split_seed=1,
-                 max_len=512,
-                 bert_model_dir='huggingface_model_resource/bert-base-cased'):
-        self.bert_model_dir = bert_model_dir
-        self.split_seed = split_seed
-        self.max_len = max_len
-        self.entity_task_lst = entity_task_lst
-        self.num_tasks = len(self.entity_task_lst)
-        self.tid2ents = {tid: ents for tid, ents in enumerate(self.entity_task_lst)}
-        self.num_ents_per_task = [len(ents) for ents in self.entity_task_lst]
-        self.ent2tid = {}
-        for tid, ents in self.tid2ents.items():
-            for ent in ents:
-                self.ent2tid[ent] = tid
+                     split_seed=1,
+                     max_len=512,
+                     bert_model_dir='huggingface_model_resource/bert-base-cased'):
+            """
+            Initializes the NerLoader class.
 
-        self.entity_lst = sum(self.entity_task_lst, [])
-        self.datareader = NerDataReader(self.bert_model_dir, self.max_len, ent_file_or_ent_lst=self.entity_lst)
+            Args:
+                entity_task_lst (list): A list of entity task lists.
+                split_seed (int, optional): The seed value for splitting the data. Defaults to 1.
+                max_len (int, optional): The maximum length of the input sequence. Defaults to 512.
+                bert_model_dir (str, optional): The directory of the BERT model. Defaults to 'huggingface_model_resource/bert-base-cased'.
+            """
+            self.bert_model_dir = bert_model_dir  # BERT模型的目录
+            self.split_seed = split_seed  # 数据分割的随机种子
+            self.max_len = max_len  # 序列的最大长度
+            self.entity_task_lst = entity_task_lst  # 实体任务列表
+            self.num_tasks = len(self.entity_task_lst)  # 任务的数量
+            self.tid2ents = {tid: ents for tid, ents in enumerate(self.entity_task_lst)}  # 任务ID到实体的映射
+            self.num_ents_per_task = [len(ents) for ents in self.entity_task_lst]  # 每个任务的实体类别数量
 
-        self.ent2id = self.datareader.ent2id
-        self.tid2entids = {tid: [self.ent2id[ent] for ent in ents] for tid, ents in self.tid2ents.items()}
-        self.tid2offset = {tid: [min(entids), max(entids) + 1] for tid, entids in self.tid2entids.items()}
-        print('tid2offset', self.tid2offset)
-        print('id2ent', self.datareader.id2ent)
-        print('tid2entids', self.tid2entids)
+            self.ent2tid = {}  # 实体到任务ID的映射
+            for tid, ents in self.tid2ents.items():
+                for ent in ents:
+                    self.ent2tid[ent] = tid
+
+            self.entity_lst = sum(self.entity_task_lst, [])  # 所有实体的列表
+            # 创建一个数据读取器，用于从BERT模型目录中读取数据
+            # datareader里有各种token和id的映射
+            self.datareader = NerDataReader(self.bert_model_dir, self.max_len, ent_file_or_ent_lst=self.entity_lst)
+
+            self.ent2id = self.datareader.ent2id  # 实体到ID的映射
+            # 任务ID到实体ID的映射
+            self.tid2entids = {tid: [self.ent2id[ent] for ent in ents] for tid, ents in self.tid2ents.items()}
+            # 任务ID到实体ID范围的映射
+            self.tid2offset = {tid: [min(entids), max(entids) + 1] for tid, entids in self.tid2entids.items()}
+            print('tid2offset', self.tid2offset)  # 打印任务ID到实体ID范围的映射
+            print('id2ent', self.datareader.id2ent)  # 打印ID到实体的映射
+            print('tid2entids', self.tid2entids)  # 打印任务ID到实体ID的映射
 
     def init_data(self, datafiles=None, setup=None, bsz=14, test_bsz=64, arch='span', use_pt=False, gpu=True, quick_test=False):
         self.task_train_generator = torch.Generator()  # make sure no affect by model_init (teacher model) i.e. non_cl_task0 = cl_task0
@@ -91,9 +137,9 @@ class CL_Loader:
         # 当时出现的问题是 每轮测试还是最后一轮测试竟然影响模型的随机性，因为只要dataloader被迭代一次都会消耗一次全局种子的随机次数。
 
         # setup: split or filter
-        self.bsz = bsz
-        self.test_bsz = test_bsz
-        self.arch = arch
+        self.bsz = bsz # batch size
+        self.test_bsz = test_bsz # test batch size
+        self.arch = arch # span or base
         self.gpu = gpu
         if setup is None:
             setup = self.setup
@@ -265,13 +311,13 @@ class CL_Loader:
         self.init_dataloaders()
 
     def load_data_with_taskid(self, exm_file, setup='split', split_seed=None, use_pt=False):
-        tid2exmids = {tid: set() for tid in range(self.num_tasks)}
+        tid2exmids = {tid: set() for tid in range(self.num_tasks)} # task_id to exm_ids
         if setup == 'filter':  # task contain all exm with the required entities, non negative
             exm_lst = NerExample.load_from_jsonl(exm_file, token_deli=' ',
                                                  external_attrs=['bert_tok_char_lst', 'ori_2_tok'])
             for exmid, exm in enumerate(exm_lst):
                 exm.remove_ent_by_type(self.entity_lst, input_keep=True)
-                for ent in exm.ent_dct:
+                for ent in exm.ent_dct: # 没有实体就不会添加到tid2exmids
                     tid2exmids[self.ent2tid[ent]].add(exmid)
 
         elif setup == 'split':  # task contain a set of exm and only contain the required entities, have negative
@@ -282,7 +328,7 @@ class CL_Loader:
             task_emx_file = exm_file.replace('.jsonl', '_task.jsonl')
             if os.path.exists(task_emx_file):
                 exm_lst = NerExample.load_from_jsonl(task_emx_file, token_deli=' ',
-                                                     external_attrs=['task_id', 'bert_tok_char_lst', 'ori_2_tok'])
+                                                     external_attrs=['task_id', 'bert_tok_char_lst', 'ori_2_tok']) # 返回一个NerExample列表，每个NerExample包含text、tag、entity_dict等
             else:
                 exm_lst = NerExample.load_from_jsonl(exm_file, token_deli=' ',
                                                      external_attrs=['bert_tok_char_lst', 'ori_2_tok'])
@@ -290,9 +336,9 @@ class CL_Loader:
                 num_data = len(exm_lst)
                 data_order = list(range(num_data))
                 random.seed(split_seed)
-                random.shuffle(data_order)
+                random.shuffle(data_order) # 打乱数据顺序
 
-                num_per_task = num_data // self.num_tasks
+                num_per_task = num_data // self.num_tasks # 均分数据到每个task
 
                 # 分好每个数据属于哪个task 然后仅保留这多个task的实体。具体每个task对应的实体在后面会自动mask
                 # allocate the data into its predefined task
@@ -359,7 +405,7 @@ class Onto_Loader(CL_Loader):
     def __init__(self, setup, bert_model_dir='huggingface_model_resource/bert-base-cased'):
         super(Onto_Loader, self).__init__(
             bert_model_dir=bert_model_dir,
-            entity_task_lst=onto_entity_task_lst
+            entity_task_lst=onto_entity_task_lst # ['ORG', 'PERSON', 'GPE', 'DATE', 'CARDINAL', 'NORP']
         )
         self.datafiles = {
             'train': 'onto/train.jsonl',
